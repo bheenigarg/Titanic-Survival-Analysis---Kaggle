@@ -1,0 +1,321 @@
+---
+title: "Titanic Dataset"
+author: "Bheeni Garg"
+date: "3/30/2017"
+output: pdf_document
+---
+
+#### Titanic Dataset: Predicting the survival ------------
+
+```{r}
+# import the training set : train
+train <- read.csv("/Users/bheeni/Documents/Leada/train.csv")
+head(train)
+colnames(train)
+
+# import the testing set: test
+test <- read.csv("/Users/bheeni/Documents/Leada/test.csv")
+
+# getting to know the data
+str(train)
+str(test)
+summary(train)
+ggplot(train, aes(x = Age)) + geom_histogram(colour = "black", fill = "white")
+ggplot(train, aes(x = Fare)) + geom_histogram(colour = "black", fill = "white")
+
+## survival by Gender
+table(train$Survived)
+ggplot(train, aes(x = Sex, fill = Sex)) + geom_bar(stat = "count", colour = "black") + scale_fill_manual(values = c("light blue", "pink")) + guides(fill = FALSE)
+prop.table(table(train$Sex, train$Survived), 1)
+
+
+# create new column in test set with our prediction that everyone dies
+test$Survived <- 0
+
+# update the prediction to say that all females will survive
+test$Survived[test$Sex == 'female'] <- 1
+
+# create submission dataframe and output to file
+submit <- data.frame(PassengerId = test$PassengerId, Survived = test$Survived)
+write.csv(submit, file = "gendermodel.csv", row.names = FALSE)
+
+## look at age patterns
+summary(train$Age)
+
+## create a new variable, Child
+train$Child <- 0
+train$Child[train$Age < 18] <- 1
+
+## proportion of children that survived
+prop.table(table(train$Child, train$Survived), 1)
+
+## survival counts by gender and whether a child or adult
+aggregate(Survived ~ Sex + Child, data = train, FUN = sum)
+
+## total number in each subset
+aggregate(Survived ~ Sex + Child, data = train, FUN = length)
+
+## proportion that survived
+aggregate(Survived ~ Sex + Child, data = train, FUN = function(x) {sum(x)/length(x)})
+
+## look at class patterns ; dividing fare into 4 groups
+
+train$Fare1 <- ifelse((train$Fare < 10), "<10", 
+               ifelse((train$Fare >= 10) & (train$Fare < 20), "10 - 20",
+               ifelse((train$Fare > 20) & (train$Fare <= 30), "20 - 30",
+               ifelse((train$Fare > 30), "30+", NA))))
+
+## proportion that survived using Sex, Pclass, Fare1
+aggregate(Survived ~ Fare1 + Pclass + Sex, data = train, FUN = function(x) {sum(x)/length(x)})
+
+# create new column in test set with our prediction that everyone dies
+test$Survived <- 0
+
+# update the prediction to say that all females will survive
+test$Survived[test$Sex == 'female'] <- 1
+
+# update once more to say that females who pay more for a third class fare also perish
+test$Survived[test$Sex == 'female' & test$Pclass == 3 & test$Fare >= 20] <- 0
+
+# create submission dataframe and output to file
+submit <- data.frame(PassengerId = test$PassengerId, Survived = test$Survived)
+write.csv(submit, file = "genderclassmodel.csv", row.names = FALSE)
+
+## build model using classification trees
+install.packages('rattle')
+install.packages('rpart.plot')
+install.packages('RColorBrewer')
+library(rpart)
+library(rattle)
+library(rpart.plot)
+library(RColorBrewer)
+
+
+model1 <- rpart(Survived ~ Pclass + Sex + Age + Fare + SibSp + Parch + Embarked, 
+                data = train,
+                method = "class")
+
+plot(model1)
+text(model1)
+fancyRpartPlot(model1)
+
+## make a prediction and write a submission file
+prediction <- predict(model1, test, type = "class")
+submit <- data.frame(PassengerId = test$PassengerId, Survived = prediction)
+write.csv(submit, file = "firstdtree.csv", row.names = FALSE)
+
+
+## create Child and Fare1 variables for the test set
+
+test$Child <- 0
+test$Child[test$Age < 18] <- 1
+
+test$Fare1 <- ifelse((test$Fare < 10), "<10", 
+               ifelse((test$Fare >= 10) & (test$Fare < 20), "10 - 20",
+               ifelse((test$Fare > 20) & (test$Fare <= 30), "20 - 30",
+               ifelse((test$Fare > 30), "30+", NA))))
+
+## combine test and train data for easier feature engineering
+
+test$Survived <- NA
+comb <- rbind(train, test)
+
+# Feature Engineering
+## convert variable Name to string
+comb$Name <- as.character(comb$Name)
+comb$Name[1]
+
+# extract titles
+strsplit(comb$Name[1], split = '[,.]')
+strsplit(comb$Name[1], split = '[,.]')[[1]][2]
+comb$Title <- sapply(comb$Name, FUN=function(x) {strsplit(x, split='[,.]')[[1]][2]})
+comb$Title <- sub(' ','', comb$Title)
+table(comb$Title)
+
+# merging titles
+comb$Title[comb$Title %in% c('Col', 'Don','Major','Sir')] <- 'Sir'
+comb$Title[comb$Title %in% c('Mrs', 'Mme')] <- 'Mrs'
+comb$Title[comb$Title %in% c('Lady', 'Jonkheer','Dona','the Countess')] <- 'Lady'
+comb$Title[comb$Title %in% c('Miss', 'Mlle','Ms')] <- 'Miss'
+comb$Title[comb$Title %in% c('Capt')] <- 'Mr'
+comb$Title <- factor(comb$Title)
+str(comb$Title)
+str(comb)
+
+## create a new variable- 'FamilySize'
+comb$FamilySize <- comb$SibSp + comb$Parch + 1 
+comb$FamilySize
+
+## create a new variable- 'FamilyID'
+comb$LastName <- sapply(comb$Name, FUN=function(x) {strsplit(x, split='[,.]')[[1]][1]})
+comb$FamilyID <- paste(as.character(comb$FamilySize), comb$LastName, sep="")
+comb$FamilyID[comb$FamilySize <= 2] <- 'Small'
+
+## inspect new feature
+table(comb$FamilyID)
+
+# delete erroneous family IDs
+famIDs <- data.frame(table(comb$FamilyID))
+famIDs <- famIDs[famIDs$Freq <= 2,]
+comb$FamilyID[comb$FamilyID %in% famIDs$Var1] <- 'Small'
+
+# convert to a factor
+comb$FamilyID <- factor(comb$FamilyID)
+comb$FamilyID
+
+# break the Train and Test data
+
+train <- comb[1:891,]
+test <- comb[892:1309,]
+
+# build a second model using classification trees
+
+model2 <- rpart(Survived ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + Title + FamilySize + FamilyID, data = train, method = "class", control = rpart.control(minsplit = 50, cp=0))
+model2
+fancyRpartPlot(model2)
+
+printcp(model2)
+plotcp(model2)
+
+prune_model <- prune(model2, cp = .01)
+plot(prune_model, main = "Model", margin = .1)
+text(prune_model)
+
+
+prediction <- predict(model2, newdata = test, type = "class")
+submit <- data.frame(PassengerId = test$PassengerId, Survived = prediction)
+write.csv(submit, file = "seconddtree.csv", row.names = FALSE)
+
+
+## build random forest ensemble
+summary(comb$Age)
+summary(comb)
+summary(comb$Cabin)
+
+## Fill in Embarked blanks
+summary(comb$Embarked)
+which(comb$Embarked == '')
+comb$Embarked[c(62, 830)] = "S"
+comb$Embarked <- factor(comb$Embarked)
+
+# Fill in Age NAs
+summary(comb$Age)
+Agefit <- rpart(Age ~ Pclass + Sex + SibSp + Parch + Fare + Embarked + Title + FamilySize, 
+                data=comb[!is.na(comb$Age),], method="anova")
+comb$Age[is.na(comb$Age)] <- predict(Agefit, comb[is.na(comb$Age),])
+
+# compute average age by title
+Avgage_Mr <- round(mean(comb$Age[comb$Title == "Mr"], na.rm = T), 2)
+Avgage_Mr
+Avgage_Mrs <- round(mean(comb$Age[comb$Title == "Mrs"], na.rm = T),2)
+Avgage_Mrs
+Avgage_Sir <- round(mean(comb$Age[comb$Title == "Sir"], na.rm = T),2)
+Avgage_Sir
+Avgage_Dr <- round(mean(comb$Age[comb$Title == "Dr"], na.rm = T),2)
+Avgage_Dr
+Avgage_Lady <- round(mean(comb$Age[comb$Title == "Lady"], na.rm = T),2)
+Avgage_Lady
+Avgage_Master <- round(mean(comb$Age[comb$Title == "Master"], na.rm = T),2)
+Avgage_Master
+Avgage_Miss <- round(mean(comb$Age[comb$Title == "Miss"], na.rm = T),2)
+Avgage_Miss
+Avgage_Rev <- round(mean(comb$Age[comb$Title == "Rev"], na.rm = T),2)
+Avgage_Rev
+  
+# imputing the missing age values by replacing them by average age of the respective title
+
+missing_age <- which(is.na(comb))
+for (i in 1:length(missing_age)){
+
+   if(comb$Title[i] == "Mr") {
+     comb$Age [i] = Avgage_Mr
+   } else if (comb$Title[i] == "Mrs") {
+     comb$Age[i] = Avgage_Mrs
+   } else if (comb$Title[i] == "Sir") {
+    comb$Age[i] = Avgage_Sir
+   } else if (comb$Title[i] == "Dr") {
+     comb$Age[i] = Avgage_Dr
+   } else if (comb$Title[i] == "Lady") {
+     comb$Age[i] = Avgage_Lady
+   } else if (comb$Title[i] == "Master") {
+     comb$Age[i] = Avgage_Master
+   } else if (comb$Title[i] == "Miss") {
+     comb$Age[i] = Avgage_Miss
+   } else if (comb$Title[i] == "Rev") {
+     comb$Age[i]= Avgage_Rev
+   } 
+}
+## Fill in Fare NAs
+summary(comb$Fare)
+which(is.na(comb$Fare))
+comb$Fare[1044] <- median(comb$Fare, na.rm=TRUE)
+
+## new factor for Random Forests, only allowed <32 levels, so reduce number
+comb$FamilyID2 <- comb$FamilyID
+
+## convert back to string
+comb$FamilyID2 <- as.character(comb$FamilyID2)
+comb$FamilyID2[comb$FamilySize <= 3] <- 'Small'
+
+## and convert back to factor
+comb$FamilyID2 <- factor(comb$FamilyID2)
+
+# Split back into test and train sets
+train <- comb[1:891,]
+test <- comb[892:1309,]
+
+# Build Random Forest Ensemble
+install.packages("randomForest")
+library(randomForest)
+set.seed(123)
+sum(is.na(train))
+model3 <- randomForest(as.factor(Survived) ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + Title + FamilySize + FamilyID2, data=train, importance=TRUE, ntree=2000)
+
+# Look at variable importance
+varImpPlot(model3)
+
+# make a prediction and write a submission file
+prediction <- predict(model3, test)
+submit <- data.frame(PassengerId = test$PassengerId, Survived = prediction)
+write.csv(submit, file = "firstforest.csv", row.names = FALSE)
+
+# Build condition inference tree Random Forest
+install.packages("party")
+library(party)
+
+set.seed(123)
+model4 <- cforest(as.factor(Survived) ~ Pclass + Sex + Age + SibSp + Parch + Fare + Embarked + Title + FamilySize + FamilyID, data = train, controls=cforest_unbiased(ntree=2000, mtry=3)) 
+
+# make a prediction and write a submission file
+prediction <- predict(model4, test, OOB=TRUE, type = "response")
+submit <- data.frame(PassengerId = test$PassengerId, Survived = prediction)
+write.csv(submit, file = "ciforest.csv", row.names = FALSE)
+
+## Logistic model
+model.glm <- glm(Survived ~ Pclass + Sex + Age + Child + Sex*Pclass + FamilySize, family = binomial, data = Traindata)
+summary((model.glm))
+p.hats <- predict.glm(model.glm, newdata = Testdata, type = "response")
+p.hats
+
+Survival <- vector()
+for (i in 1: length(p.hats)){
+  if (p.hats[i] > 0.5){
+    Survival[i] <- 1
+  } else {Survival[i] <- 0}
+}
+
+submit2 <- data.frame(PassengerId = Testdata$PassengerId, Survived = Survival)
+write.csv(submit2, file = "logistic.csv", row.names = F)
+submit2
+
+str(Traindata$Sex)
+table(Traindata$Survived)
+prop.table(table(Traindata$Survived))
+names(Testdata)
+Testdata$Survived <- rep(0, 418)
+submit1 <- data.frame(PassengerId = Testdata$PassengerId, Survived = predictions)
+submit1
+Testdata$Survived <- 0
+Testdata$Survived[Testdata$Sex == 'female' & Testdata$Pclass == '1'] <- 1
+write.csv(submit1, file = "decisiontree1.csv", row.names = F)
+---------
